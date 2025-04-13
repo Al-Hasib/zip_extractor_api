@@ -1,42 +1,63 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 import zipfile
 import io
 import os
 import shutil
+from typing import List
+import uuid
 
 app = FastAPI()
 
+# Define the uploads directory
+UPLOADS_DIR = "/app/uploads"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Mount the uploads directory as a static file directory
+app.mount("/files", StaticFiles(directory=UPLOADS_DIR), name="files")
+
 @app.post("/upload-zip/")
 async def upload_zip(file: UploadFile = File(...)):
-    # Read the uploaded file
+    # Verify file is a zip
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="File must be a ZIP archive")
+    
+    # Read uploaded file
     contents = await file.read()
-
-    # Create an in-memory byte-stream
     zip_in_memory = io.BytesIO(contents)
-
-    # Extract zip file into a temporary directory
-    temp_dir = "temp_images"
-    os.makedirs(temp_dir, exist_ok=True)
     
-    with zipfile.ZipFile(zip_in_memory) as zip_ref:
-        zip_ref.extractall(temp_dir)
+    # Create a unique session directory within the uploads directory
+    session_id = file.filename[:-4]  # Remove the .zip extension for session ID
+    session_dir = os.path.join(UPLOADS_DIR, session_id)
+    os.makedirs(session_dir, exist_ok=True)
     
-    # Now you can do whatever you want with the images inside temp_dir
-    # For example, you could zip them back and return
-    output_zip_stream = io.BytesIO()
-    with zipfile.ZipFile(output_zip_stream, mode="w") as zf:
-        for root, _, files in os.walk(temp_dir):
-            for file_name in files:
-                file_path = os.path.join(root, file_name)
-                zf.write(file_path, arcname=file_name)
+    image_files = []
     
-    # Clean up the temp directory
-    shutil.rmtree(temp_dir)
-
-    # Set the stream's cursor to the beginning
-    output_zip_stream.seek(0)
-
-    return StreamingResponse(output_zip_stream, media_type="application/x-zip-compressed", headers={
-        "Content-Disposition": "attachment; filename=extracted_images.zip"
-    })
+    try:
+        # Extract the zip contents
+        with zipfile.ZipFile(zip_in_memory) as zip_ref:
+            # Get list of image files only
+            for file_info in zip_ref.infolist():
+                if not file_info.is_dir():
+                    # Check if file has common image extension
+                    # lower_name = file_info.filename.lower()
+                    # if any(lower_name.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']):
+                    zip_ref.extract(file_info, session_dir)
+                    image_files.append(os.path.join(file_info.filename))
+        
+        # Return the file paths and count, including URLs to access them
+        base_url = f"/files/{session_id}"
+        response = {
+            "message": f"Extracted {len(image_files)} image files",
+            "ID": session_id,
+            "folder": session_dir
+        }
+        
+        return response
+    
+    except Exception as e:
+        # Clean up on error
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir)
+        raise HTTPException(status_code=500, detail=f"Error processing ZIP file: {str(e)}")

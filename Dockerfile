@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of your application code
 COPY . .
 
+# Create a directory for storing uploaded files that will be mounted as a volume
+RUN mkdir -p /app/uploads
+
 # Expose the port where FastAPI will run
 EXPOSE 8000
 
